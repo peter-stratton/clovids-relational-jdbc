@@ -1,6 +1,6 @@
-(ns state-forest-demo.core-test
+(ns public-land-finder.core-test
   (:require [clojure.test :refer :all]
-            [state-forest-demo.core :refer :all]))
+            [public-land-finder.core :refer :all]))
 
 (deftest a-test
   (testing "FIXME, I fail."

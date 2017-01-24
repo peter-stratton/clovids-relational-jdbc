@@ -1,4 +1,4 @@
-(ns state-forest-demo.core
+(ns public-land-finder.core
   (:gen-class))
 
 (defn -main
