@@ -6,6 +6,7 @@
   :dependencies [[org.clojure/clojure "1.8.0"]
                  [org.clojure/java.jdbc "0.7.0-alpha1"]
                  [org.postgresql/postgresql "9.4.1212"]]
+  :plugins [[lein-gorilla "0.4.0"]]
   :main ^:skip-aot public-land-finder.core
   :target-path "target/%s"
   :profiles {:uberjar {:aot :all}})
