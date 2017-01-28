@@ -1,11 +1,15 @@
 # Public Land Finder
 
-This is the example project used in the ClojureVids video [Clojure and Postgres with the JDBC Library]() video demo.
+This is the source code repository used in the ClojureVids Series [Postgres & Clojure Using `clojure.java.jdbc`](https://www.youtube.com/playlist?list=PLqIfqRWz6c_mndpPc6KdlYNR-QU0RFF1W).
 
-## Entity Relational Diagram
+## YouTube Videos
+The video series is hosted up on youtube:
 
-https://www.lucidchart.com/documents/view/c75cee0f-8d49-499c-a555-47e6915af905
+* [Postgres & Clojure Using clojure.java.jdbc - Part 1 of 3](https://youtu.be/yjS0jHr_-2g)
+* [Postgres & Clojure Using clojure.java.jdbc - Part 2 of 3](https://youtu.be/XKv2yg_2EX4)
+* [Postgres & Clojure Using clojure.java.jdbc - Part 3 of 3](https://youtu.be/4dJzrrrbc7Y)
 
-## Usage
+## Transcript Available
+If you'd prefer to follow along with a written version, I have an abbreviated transcript on my personal site:
 
-    $ java -jar public_land_finder-0.1.0-standalone.jar [args]
+http://peterstratton.com/posts-output/2017-01-28-postgres-and-clojure-using-clojure-java-jdbc/

@@ -1,0 +1,477 @@
+;; gorilla-repl.fileformat = 1
+
+;; **
+;;; # Public Land Finder
+;;; 
+;;; This worksheet is an examination of the `clojure.java.jdbc` library.
+;;; 
+;;; ##Prerequisites
+;;; 
+;;; It's assumed you've set up an empty postgres database and have a `clojure.java.jdbc` on your class path.
+;;; 
+;;; ##Required Libraries
+;;; 
+;;; We'll need the `clojure.java.jdbc` library of course.  We'll also want to alias `clojure.string` for use later.
+;; **
+
+;; @@
+(ns public-land-finder
+  (:require [clojure.string :as str]
+            [clojure.java.jdbc :as j]))
+;; @@
+
+;; **
+;;; ##Creating Tables
+;;; 
+;;; The first step is to import the `clojure.java.jdbc` library and create a new `db-spec` for our `public_land` database:
+;; **
+
+;; @@
+(def db {:dbtype "postgresql"
+         :dbname "public_land"
+         :host "localhost"
+         :user "public_land_user"
+         :password "keeppubliclandinpublichands"})
+;; @@
+
+;; **
+;;; Next we'll use the `create-table-ddl` form to auto-generate the SQL to create our `State` table:
+;; **
+
+;; @@
+(def state-sql (j/create-table-ddl :state [[:state_id :serial "PRIMARY KEY"]
+                                           [:state "VARCHAR(32)"]
+                                           [:abrv "VARCHAR(2)"]]))
+;; @@
+
+;; **
+;;; Let's take a look at the the generated ddl:
+;; **
+
+;; @@
+(println state-sql)
+;; @@
+
+;; **
+;;; Everything looks good, so we'll go ahead and `execute!` it:
+;; **
+
+;; @@
+(j/execute! db [state-sql])
+;; @@
+
+;; **
+;;; Then add our first record to the new table:
+;; **
+
+;; @@
+(j/insert! db :state {:state "Alabama" :abrv "AL"})
+;; @@
+
+;; **
+;;; ##Running Queries
+;;; 
+;;; Let's run a simple query to retrieve our first record:
+;; **
+
+;; @@
+(j/query db ["SELECT * FROM state WHERE state = ?" "Alabama"])
+;; @@
+
+;; **
+;;; ##Adding Multiple Records
+;;; 
+;;; There are a few ways to add multiple records in a single query.  The `insert-multi!` form takes a vector of hash-maps and returns the row data that was inserted:
+;; **
+
+;; @@
+(j/insert-multi! db :state [{:state "Alaska" :abrv "AK"}
+                            {:state "Arizona" :abrv "AZ"}
+                            {:state "Arkansas" :abrv "AR"}])
+;; @@
+
+;; **
+;;; The `db-do-prepared` form accepts a parameterized SQL string and then a series of parameter groups.  Instead of returning row data, it returns a seq of update counts:
+;; **
+
+;; @@
+(j/db-do-prepared db ["INSERT INTO state (state, abrv) VALUES (?, ?)"
+                      ["California" "CA"]
+                      ["Colorado" "CO"]
+                      ["Connecticut" "CN"]] {:multi? true})
+;; @@
+
+;; **
+;;; ##Updating Records
+;;; 
+;;; Looks like we've made a mistake and used "CN" rather than "CT" for Connecticut's abbreviation, so let's fix that:
+;; **
+
+;; @@
+(j/update! db :state {:abrv "CT"} ["abrv = ?" "CN"])
+;; @@
+
+;; **
+;;; then run a sanity check to make sure everything is cool:
+;; **
+
+;; @@
+(j/query db ["SELECT abrv FROM state WHERE state = ?" "Connecticut"])
+;; @@
+
+;; **
+;;; ##Query Result Set Processing
+;;; 
+;;; We can specify a function to be run against either the entire query result set and/or each individual row.  Let's look at `result-set-fn` first.  In this example we're going to use the `count` function that is part of the `clojure.core` library.
+;; **
+
+;; @@
+(j/query db ["SELECT state_id FROM state"] {:result-set-fn count})
+;; @@
+
+;; **
+;;; Normally a query would return a result set of hash-maps.  If we wanted a sequence of just the state names, we could pass the `:state` key in as the `row-fn`:
+;; **
+
+;; @@
+(j/query db ["SELECT state FROM state"] {:row-fn :state})
+;; @@
+
+;; **
+;;; We can use row and result set functions in the same query.  Let's write a utility function to retrieve a `state_id` by its `abrv` value or full name:
+;; **
+
+;; @@
+(defn id-for-state 
+  [s]
+  (if (= 2 (count s))
+    (j/query db ["SELECT state_id FROM state where abrv = ?" s] {:row-fn :state_id :result-set-fn first})
+    (j/query db ["SELECT state_id FROM state where state = ?" s] {:row-fn :state_id :result-set-fn first})))
+;; @@
+
+;; @@
+(id-for-state "California")
+;; @@
+
+;; @@
+(id-for-state "AK")
+;; @@
+
+;; **
+;;; ##Foreign Key Constraints
+;;; 
+;;; Now that we have our `states` table started, let's add a `state_forest` table.  We'll want each `state_forest` to include a Foreign Key constraint to the state in which it's located.  We do this by using `REFERENCES`.  Since we want to use the `state` table's primary key, we only have to specify the name of the table.
+;;; 
+;;; We'll create the DDL and `execute!` it in the same form this time:
+;; **
+
+;; @@
+(j/execute! db [(j/create-table-ddl :state_forest [[:state_id :int "REFERENCES state"]
+                                                   [:state_forest_id :serial "PRIMARY KEY"]
+                                                   [:state_forest "VARCHAR(256)"]
+                                                   [:acres :int]])])
+;; @@
+
+;; **
+;;; Let's create a little utility function to facilitate loading `state_forest` records from a simple `[state_forest acres]` data structure.  Here's Alabama's data set:
+;; **
+
+;; @@
+(def al-sfs [["Choccolocco" 4536]
+             ["Hauss" 319]
+             ["Geneva" 7120]
+             ["Little River" 2100]
+             ["Macon" 190]
+             ["Weogufka" 240]])
+;; @@
+
+;; **
+;;; Our utility will map over the data structure and build a vector of hashmaps that we can pass into `insert-multi!`:
+;; **
+
+;; @@
+(defn load-state-forests! 
+  [sf-vec s]
+  (let [state-id (id-for-state s)]
+    (j/insert-multi! db :state_forest (map #(hash-map :state_id state-id
+                                                      :state_forest (first %1)
+                                                      :acres (second %1)) sf-vec))))
+;; @@
+
+;; **
+;;; And now we can load Alabama's state forest data:
+;; **
+
+;; @@
+(load-state-forests! al-sfs "AL")
+;; @@
+
+;; **
+;;; ##Deleting Records
+;;; 
+;;; Let's go over how to delete records.  First, we'll blow away a `state_forest`:
+;; **
+
+;; @@
+(j/delete! db :state_forest ["state_forest = ?" "Macon"])
+;; @@
+
+;; @@
+(j/query db ["SELECT * FROM state_forest WHERE state_forest = ?" "Macon"])
+;; @@
+
+;; **
+;;; Nice.  Now let's see what happens if we delete a `state`:
+;; **
+
+;; @@
+(j/delete! db :state ["abrv = ?" "AL"])
+;; @@
+
+;; **
+;;; Looks like we didn't establish a deletion policy for our `state_forest` Foreign Key constraint!  Typically we'd want all the child records to be deleted if the parent is deleted.  Let's completely blow away the `state_forest` table and rebuild it properly.  First we'll use the `drop-table-ddl` form to drop the table:
+;; **
+
+;; @@
+(j/execute! db (j/drop-table-ddl :state_forest))
+;; @@
+
+;; **
+;;; With that done, let's rebuild it with the proper `UPDATE` and `DELETE` policies in place (the `UPDATE` policy handles an event where the Foreign Key value on the parent object changes).  We want both policies to `CASCADE`, which means automatically `UPDATE` or `DELETE` the child to mirror the parent:
+;; **
+
+;; @@
+(j/execute! db [(j/create-table-ddl :state_forest [[:state_id :int "REFERENCES state ON UPDATE CASCADE ON DELETE CASCADE"]
+                                                   [:state_forest_id :serial "PRIMARY KEY"]
+                                                   [:state_forest "VARCHAR(256)"]
+                                                   [:acres :int]])])
+;; @@
+
+;; **
+;;; Next we repopulate our `state_forest` table:
+;; **
+
+;; @@
+(load-state-forests! al-sfs "AL")
+;; @@
+
+;; @@
+(j/query db ["SELECT state_forest_id FROM state_forest"] {:result-set-fn count})
+;; @@
+
+;; **
+;;; With our deletion policy set to `CASCADE`, if we delete Alabama all of its state forests should go along with it:
+;; **
+
+;; @@
+(j/delete! db :state ["abrv = ?" "AL"])
+;; @@
+
+;; @@
+(j/query db ["SELECT state_forest_id FROM state_forest"] {:result-set-fn count})
+;; @@
+
+;; **
+;;; ##Modifying Constraints
+;;; 
+;;; Dropping the table and rebuilding is fine during development, but typically you wouldn't want to run something so destructive on a production table.  Let's add Alabama back into the `state` table and repopulate our `state_forests`:
+;; **
+
+;; @@
+(j/insert! db :state {:state "Alabama" :abrv "AL"})
+;; @@
+
+;; @@
+(load-state-forests! al-sfs "AL")
+;; @@
+
+;; **
+;;; Next we need to figure out what the auto-generated name for our Foreign Key constraint is since we didn't explicitly set it in our DDL statement:
+;; **
+
+;; @@
+(j/query db ["SELECT constraint_name FROM information_schema.table_constraints WHERE table_name = ?" "state_forest"])
+;; @@
+
+;; **
+;;; Postgres won't let us modify a Foreign Key constraint directly.  We'll need to drop it, then reimplement it:
+;; **
+
+;; @@
+(j/execute! db ["ALTER TABLE state_forest DROP CONSTRAINT state_forest_state_id_fkey"])
+;; @@
+
+;; **
+;;; We'll run a sanity check to make sure we did in fact drop it:
+;; **
+
+;; @@
+(j/query db ["SELECT constraint_name FROM information_schema.table_constraints WHERE table_name = ?" "state_forest"])
+;; @@
+
+;; **
+;;; Let's add the Foreign Key constraint back in, this time we'll set the deletion policy to `RESTRICT`, which means it'll throw an error if we try and delete a `state` that has `state_forest` relations:
+;; **
+
+;; @@
+(j/execute! db ["ALTER TABLE state_forest ADD CONSTRAINT state_forest_state_id_fkey_new FOREIGN KEY (state_id) REFERENCES state ON DELETE RESTRICT"])
+;; @@
+
+;; **
+;;; Now we're back at our original (undesirable) state where the attempt to delete a `state` raises an exception:
+;; **
+
+;; @@
+(j/delete! db :state ["abrv = ?" "AL"])
+;; @@
+
+;; **
+;;; Now that you know how to "modify" Foreign Key constraints, let's set it back to `CASCADE` before moving on:
+;; **
+
+;; @@
+(j/execute! db ["ALTER TABLE state_forest DROP CONSTRAINT state_forest_state_id_fkey_new"])
+;; @@
+
+;; @@
+(j/execute! db ["ALTER TABLE state_forest ADD CONSTRAINT state_forest_state_id_fkey FOREIGN KEY (state_id) REFERENCES state ON UPDATE CASCADE ON DELETE CASCADE"])
+;; @@
+
+;; **
+;;; ##Many-To-Many Relationships
+;;; 
+;;; The final thing I'd like to go over is how to set up a Many-To-Many (or N:M) relationship.  Relational databases represent a N:M relationship using a special table that consists of the Foreign Key relationships and any associated data.
+;;; 
+;;; Let's say we want to have an `activity` table that has records for all the different activities that might be allowed in a `state_forest`:
+;; **
+
+;; @@
+(j/execute! db [(j/create-table-ddl :activity [[:activity_id :serial "PRIMARY KEY"]
+                                               [:activity "VARCHAR(64)"]])])
+;; @@
+
+;; @@
+(j/insert-multi! db :activity [{:activity "hunting"}
+                               {:activity "fishing"}
+                               {:activity "trail riding"}
+                               {:activity "hiking"}
+                               {:activity "primitive camping"}])
+;; @@
+
+;; **
+;;; A `state_forest` can allow many different activities, and many state forests can allow the same `activity`.  As far as `UPDATE` and `DELETE` policies, if we delete a `state_forest` or an `activity` we want all the N:M relationships involving the deleted record to go as well.  Our relationship table DDL looks like this:
+;; **
+
+;; @@
+(j/execute! db [(j/create-table-ddl :state_forest_activity [[:state_forest_id :int "REFERENCES state_forest ON UPDATE CASCADE ON DELETE CASCADE"]
+                                                            [:activity_id :int "REFERENCES activity ON UPDATE CASCADE ON DELETE CASCADE"]
+                                                            ["CONSTRAINT state_forest_activity_pkey PRIMARY KEY (state_forest_id, activity_id)"]])])
+;; @@
+
+;; **
+;;; While we could certainly build up our relationship table manually by querying the primary keys of `state_forest` and `activity` then inserting the new records into our relationship table, it'll be a common enough operation that a few helper functions are more than justified.
+;;; 
+;;; First we'll need one to get the `state_forest_id`.  Retrieving an id is so common I'd probably create a more general function that would work on any record when it's time to create the actual application, but for now we'll just create another table specific form:
+;; **
+
+;; @@
+(defn id-for-state-forest
+  [name]
+  (j/query db ["SELECT state_forest_id FROM state_forest where state_forest = ?" (str/capitalize name)] {:row-fn :state_forest_id :result-set-fn first}))
+;; @@
+
+;; @@
+(id-for-state-forest "Geneva")
+;; @@
+
+;; **
+;;; Now we'll create another table specific form for `activity_id`:
+;; **
+
+;; @@
+(defn id-for-activity 
+  [name]
+  (j/query db ["SELECT activity_id FROM activity where activity = ?" (str/lower-case name)] {:row-fn :activity_id :result-set-fn first}))
+;; @@
+
+;; @@
+(id-for-activity "fishing")
+;; @@
+
+;; **
+;;; Let's take a look at what our full `activity` query result set looks like:
+;; **
+
+;; @@
+(j/query db ["SELECT * FROM activity"])
+;; @@
+
+;; **
+;;; ##Adding N:M Relationships (conveniently)
+;;; 
+;;; Ideally, I'd like to be able to specify the name of a `state_forest` then pass in a vector of activities that are allowed.  For this to work, we'll need `activity` row maps to use `activity` as the key and `activity_id` as the value.  It'll make sense in a second, so just bear with me.  Here's the remapping function:
+;; **
+
+;; @@
+(defn activity-remapper 
+  [m] 
+  (hash-map (keyword (:activity m)) (:activity_id m)))
+;; @@
+
+;; @@
+(activity-remapper {:activity_id 1, :activity "hunting"})
+;; @@
+
+;; **
+;;; Finally we'll create our new form for building `state_forest` `activity` relationships:
+;; **
+
+;; @@
+(defn load-state-forest-activities!
+  [sf-name activities]
+  (let [sf-id (id-for-state-forest sf-name)
+        activity-map (apply merge (j/query db ["SELECT * FROM activity"]{:row-fn activity-remapper}))]
+    (j/insert-multi! db :state_forest_activity (map #(hash-map :state_forest_id sf-id, :activity_id ((keyword %) activity-map)) activities))))
+;; @@
+
+;; **
+;;; Now we can easily add new relationships:
+;; **
+
+;; @@
+(load-state-forest-activities! "Geneva" ["hunting" "fishing" "trail riding" "hiking" "primitive camping"])
+;; @@
+
+;; **
+;;; ##Querying N:M Relationships (conveniently)
+;;; Nice.  Now we just need a convenient way to get our data back out.  I'd like a function that accepts a `state_forest` and returns a sequence of activities.  Since our relationship table stores the id values, let's create a helper function that will perform the `activity` lookup for an id: 
+;; **
+
+;; @@
+(defn name-for-activity-id 
+  [id] 
+  (j/query db ["SELECT activity FROM activity WHERE activity_id = ?" id] {:row-fn :activity}))
+;; @@
+
+;; @@
+(name-for-activity-id 2)
+;; @@
+
+;; **
+;;; The `activity` query itself will need to use the `IN` sql condition.  Passing a parameter list into the normal query like we've done elsewhere doesn't work since the underlying JDBC library can't infer the datatype.  Since the list of activity ids is generated interally we don't really have to worry about a malicious user injecting raw SQL.  That being the case, I'll just use a string format function to build the query.  If SQL injection is a concern, we'd have to go through hassle of extending the underlying protocol to convery clojure data types into a format that the underlying JDBC library understands.  But for this example, `format` is fine:
+;; **
+
+;; @@
+(defn query-activities-for-sf 
+  [sf-name]
+  (let [act-ids (j/query db ["SELECT activity_id FROM state_forest_activity WHERE state_forest_id = ?" (id-for-state-forest sf-name)]{:row-fn :activity_id})]
+    (j/query db [(format "SELECT activity FROM activity WHERE activity_id IN (%s)" (str/join "," act-ids))]{:row-fn :activity})))
+;; @@
+
+;; @@
+(query-activities-for-sf "Geneva")
+;; @@
+
+;; **
+;;; 
+;; **
